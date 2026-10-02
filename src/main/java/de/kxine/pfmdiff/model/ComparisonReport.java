@@ -27,4 +27,8 @@ public record ComparisonReport(
     public boolean hasErrors() {
         return entries.stream().anyMatch(EntryResult::hasError);
     }
+
+    public boolean hasSkipped() {
+        return entries.stream().anyMatch(entry -> entry.status() == EntryResult.Status.SKIPPED);
+    }
 }

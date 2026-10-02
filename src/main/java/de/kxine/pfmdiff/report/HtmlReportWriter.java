@@ -19,6 +19,10 @@ public final class HtmlReportWriter {
             .withZone(ZoneId.systemDefault());
 
     public void write(ComparisonReport report, Path output) throws IOException {
+        write(report, output, false);
+    }
+
+    public void write(ComparisonReport report, Path output, boolean overwrite) throws IOException {
         Path absolute = output.toAbsolutePath().normalize();
         Path parent = absolute.getParent();
         if (parent == null) throw new IOException("The report output needs a parent directory.");
@@ -28,10 +32,15 @@ public final class HtmlReportWriter {
             try (BufferedWriter writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
                 writeDocument(writer, report);
             }
-            try {
-                Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
+            if (overwrite) {
+                try {
+                    Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } else {
+                // Do not use ATOMIC_MOVE here: its behavior when the target exists is provider-specific.
+                Files.move(temporary, absolute);
             }
         } finally {
             Files.deleteIfExists(temporary);
@@ -72,18 +81,15 @@ public final class HtmlReportWriter {
         out.write("</tbody></table><div id=\"empty\" class=\"empty\" hidden>No matching entries.</div>");
         out.write("""
                 <script>
-                const q=document.querySelector('#search'),f=document.querySelector('#filter'),rows=[...document.querySelectorAll('#results tr')],count=document.querySelector('#visible'),empty=document.querySelector('#empty');
-                function apply(){const term=q.value.toLocaleLowerCase(),status=f.value;let shown=0;for(const row of rows){const yes=(!status||row.dataset.status===status)&&(!term||row.dataset.search.includes(term));row.hidden=!yes;if(yes)shown++}count.textContent=shown+' of '+rows.length+' entries';empty.hidden=shown!==0}q.addEventListener('input',apply);f.addEventListener('change',apply);apply();
+                const q=document.querySelector('#search'),f=document.querySelector('#filter'),rows=document.querySelectorAll('#results tr'),count=document.querySelector('#visible'),empty=document.querySelector('#empty');
+                function apply(){const term=q.value.toLocaleLowerCase(),status=f.value;let shown=0;for(const row of rows){const yes=(!status||row.dataset.status===status)&&(!term||row.textContent.toLocaleLowerCase().includes(term));row.hidden=!yes;if(yes)shown++}count.textContent=shown+' of '+rows.length+' entries';empty.hidden=shown!==0}q.addEventListener('input',apply);f.addEventListener('change',apply);apply();
                 </script></main></body></html>
                 """);
     }
 
     private void writeEntry(BufferedWriter out, EntryResult entry) throws IOException {
         String status = entry.status().name().toLowerCase(Locale.ROOT);
-        StringBuilder searchable = new StringBuilder(entry.relativePath()).append(' ').append(entry.fileKind()).append(' ');
-        entry.details().forEach(detail -> searchable.append(detail).append(' '));
-        if (entry.error() != null) searchable.append(entry.error());
-        out.write("<tr data-status=\"" + status + "\" data-search=\"" + attribute(searchable.toString().toLowerCase(Locale.ROOT)) + "\">");
+        out.write("<tr data-status=\"" + status + "\">");
         out.write("<td><span class=\"status " + status + "\">" + title(entry.status().name()) + "</span></td>");
         out.write("<td class=\"path\">" + html(entry.relativePath()) + "</td>");
         out.write("<td>" + title(entry.entryType().name()));
@@ -135,7 +141,4 @@ public final class HtmlReportWriter {
                 .replace("\"", "&quot;").replace("'", "&#39;");
     }
 
-    private static String attribute(String value) {
-        return html(value).replace("\n", " ").replace("\r", " ");
-    }
 }

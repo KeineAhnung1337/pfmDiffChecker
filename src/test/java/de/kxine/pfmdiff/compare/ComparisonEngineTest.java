@@ -8,19 +8,25 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ComparisonEngineTest {
@@ -87,6 +93,62 @@ class ComparisonEngineTest {
         assertEquals(Boolean.FALSE, value.semanticEqual());
         assertTrue(value.details().stream().anyMatch(line -> line.contains("old")));
         assertTrue(value.details().stream().anyMatch(line -> line.contains("new")));
+    }
+
+    @Test
+    void xmlCombinesAdjacentTextAndCdata() throws Exception {
+        Path original = Files.createDirectory(temporary.resolve("original"));
+        Path comparison = Files.createDirectory(temporary.resolve("comparison"));
+        Files.writeString(original.resolve("text.xml"), "<root>a<![CDATA[b]]></root>");
+        Files.writeString(comparison.resolve("text.xml"), "<root>ab</root>");
+
+        EntryResult xml = compare(original, comparison).entries().get(0);
+        assertEquals(EntryResult.Status.CHANGED, xml.status());
+        assertEquals(Boolean.TRUE, xml.semanticEqual());
+    }
+
+    @Test
+    void xmlPreservesInlineWhitespaceAndXmlSpace() throws Exception {
+        Path original = Files.createDirectory(temporary.resolve("original"));
+        Path comparison = Files.createDirectory(temporary.resolve("comparison"));
+        Files.writeString(original.resolve("inline.xml"), "<p><b>a</b> <b>b</b></p>");
+        Files.writeString(comparison.resolve("inline.xml"), "<p><b>a</b><b>b</b></p>");
+        Files.writeString(original.resolve("preserve.xml"), "<p xml:space=\"preserve\">\n<b>a</b></p>");
+        Files.writeString(comparison.resolve("preserve.xml"), "<p xml:space=\"preserve\"><b>a</b></p>");
+        Files.writeString(original.resolve("cdata.xml"), "<p><![CDATA[\n]]><b>a</b></p>");
+        Files.writeString(comparison.resolve("cdata.xml"), "<p><b>a</b></p>");
+        Files.writeString(original.resolve("multiline.xml"), "<p><b>a</b>\n<b>b</b></p>");
+        Files.writeString(comparison.resolve("multiline.xml"), "<p><b>a</b><b>b</b></p>");
+
+        for (EntryResult xml : compare(original, comparison).entries()) {
+            assertEquals(Boolean.FALSE, xml.semanticEqual(), xml.relativePath());
+        }
+    }
+
+    @Test
+    void xmlComparisonCanBeCancelledAfterReadingFiles() throws Exception {
+        Path original = temporary.resolve("original.xml");
+        Path comparison = temporary.resolve("comparison.xml");
+        Files.writeString(original, "<root>old</root>");
+        Files.writeString(comparison, "<root>new</root>");
+        AtomicInteger checks = new AtomicInteger();
+
+        assertThrows(ComparisonEngine.ComparisonCancelledException.class,
+                () -> XmlFileComparator.compare(original, comparison, 500, () -> checks.incrementAndGet() >= 4));
+    }
+
+    @Test
+    void oversizedXmlIsReportedAsAnErrorWithoutReadingItAll() throws Exception {
+        Path original = Files.createDirectory(temporary.resolve("original"));
+        Path comparison = Files.createDirectory(temporary.resolve("comparison"));
+        byte[] oversized = new byte[16 * 1024 * 1024 + 1];
+        Files.write(original.resolve("big.xml"), oversized);
+        oversized[0] = 1;
+        Files.write(comparison.resolve("big.xml"), oversized);
+
+        EntryResult xml = compare(original, comparison).entries().get(0);
+        assertEquals(EntryResult.Status.ERROR, xml.status());
+        assertTrue(xml.error().contains("16 MiB"));
     }
 
     @Test
@@ -164,6 +226,55 @@ class ComparisonEngineTest {
         assertEquals(EntryResult.Status.CHANGED, pdf.status());
         assertEquals(Boolean.TRUE, pdf.semanticEqual());
         assertTrue(pdf.details().stream().anyMatch(line -> line.contains("binary representation changed")));
+    }
+
+    @Test
+    void pdfComparisonCanBeCancelledBetweenPages() throws Exception {
+        Path original = temporary.resolve("original.pdf");
+        Path comparison = temporary.resolve("comparison.pdf");
+        writePdf(original, "old");
+        writePdf(comparison, "new");
+        AtomicInteger checks = new AtomicInteger();
+
+        assertThrows(ComparisonEngine.ComparisonCancelledException.class,
+                () -> PdfFileComparator.compare(original, comparison, 500, () -> checks.incrementAndGet() >= 4));
+    }
+
+    @Test
+    void binaryDiffFindsChangesAcrossReadBlocks() throws Exception {
+        Path original = Files.createDirectory(temporary.resolve("original"));
+        Path comparison = Files.createDirectory(temporary.resolve("comparison"));
+        byte[] before = new byte[65_537];
+        byte[] after = Arrays.copyOf(before, 65_538);
+        after[65_535] = 1;
+        after[65_536] = 2;
+        after[65_537] = 3;
+        Files.write(original.resolve("boundary.private"), before);
+        Files.write(comparison.resolve("boundary.private"), after);
+
+        EntryResult binary = compare(original, comparison).entries().get(0);
+        assertEquals(EntryResult.Status.CHANGED, binary.status());
+        assertTrue(binary.details().stream().anyMatch(line -> line.contains("3 differing positions")));
+        assertTrue(binary.details().stream().anyMatch(line -> line.contains("0x0000FFFF") && line.contains("0x00010001")));
+    }
+
+    @Test
+    void symlinksAreListedButNeverFollowed() throws Exception {
+        Path original = Files.createDirectory(temporary.resolve("original"));
+        Path comparison = Files.createDirectory(temporary.resolve("comparison"));
+        Path target = temporary.resolve("outside.txt");
+        Files.writeString(target, "outside data");
+        try {
+            Files.createSymbolicLink(original.resolve("linked.txt"), target);
+            Files.createSymbolicLink(comparison.resolve("linked.txt"), target);
+        } catch (UnsupportedOperationException | SecurityException | IOException e) {
+            Assumptions.abort("Symbolic links are not available: " + e);
+        }
+
+        EntryResult link = compare(original, comparison).entries().get(0);
+        assertEquals(EntryResult.EntryType.SYMBOLIC_LINK, link.entryType());
+        assertEquals(EntryResult.Status.SKIPPED, link.status());
+        assertNull(link.originalHash());
     }
 
     private ComparisonReport compare(Path original, Path comparison) throws Exception {

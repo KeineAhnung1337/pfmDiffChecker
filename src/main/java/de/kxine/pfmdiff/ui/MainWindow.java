@@ -135,7 +135,8 @@ public final class MainWindow extends JFrame {
             JOptionPane.showMessageDialog(this, e.getMessage(), "Invalid input", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        if (Files.exists(output)) {
+        boolean overwrite = Files.exists(output);
+        if (overwrite) {
             int choice = JOptionPane.showConfirmDialog(this, "Replace the existing report?\n" + output,
                     "Confirm overwrite", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
             if (choice != JOptionPane.YES_OPTION) return;
@@ -151,7 +152,7 @@ public final class MainWindow extends JFrame {
             protected ComparisonReport doInBackground() throws Exception {
                 return new AppService().compareAndWrite(original, comparison, output,
                         (completed, total, path) -> publish(new ProgressUpdate(completed, total, path)),
-                        this::isCancelled);
+                        this::isCancelled, overwrite);
             }
 
             @Override
@@ -174,11 +175,13 @@ public final class MainWindow extends JFrame {
                     progress.setValue(progress.getMaximum());
                     progress.setString("Complete");
                     String outcome = report.hasErrors() ? "Completed with errors"
+                            : report.hasSkipped() ? "Incomplete: symbolic links skipped"
                             : report.hasDifferences() ? "Differences found" : "Directories are identical";
                     status.setText(outcome + ". Report: " + output);
                     JOptionPane.showMessageDialog(MainWindow.this,
                             outcome + ".\n\nThe HTML report was written to:\n" + output,
-                            "Comparison complete", report.hasErrors() ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
+                            "Comparison complete", report.hasErrors() || report.hasSkipped()
+                                    ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
                 } catch (CancellationException e) {
                     progress.setString("Cancelled");
                     status.setText("Comparison cancelled; no report was written.");

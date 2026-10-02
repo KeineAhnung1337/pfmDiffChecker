@@ -31,25 +31,31 @@ final class BinaryFileComparator {
         long rangeCount = 0;
 
         try (InputStream left = new BufferedInputStream(Files.newInputStream(original), 64 * 1024);
-             InputStream right = new BufferedInputStream(Files.newInputStream(comparison), 64 * 1024)) {
+              InputStream right = new BufferedInputStream(Files.newInputStream(comparison), 64 * 1024)) {
+            byte[] oldBlock = new byte[64 * 1024];
+            byte[] newBlock = new byte[64 * 1024];
             while (true) {
-                int oldByte = left.read();
-                int newByte = right.read();
-                if (oldByte == -1 && newByte == -1) break;
-                if (oldByte != newByte) {
-                    differingPositions++;
-                    if (current == null) {
-                        current = new RangeBuilder(offset);
-                        rangeCount++;
-                    }
-                    current.append(offset, oldByte, newByte);
-                } else if (current != null) {
-                    store(ranges, current, maximumStoredRanges);
-                    current = null;
-                }
-                offset++;
-                if ((offset & 0xFFFF) == 0 && cancelled != null && cancelled.getAsBoolean()) {
+                if (cancelled != null && cancelled.getAsBoolean()) {
                     throw new ComparisonEngine.ComparisonCancelledException();
+                }
+                int oldCount = left.readNBytes(oldBlock, 0, oldBlock.length);
+                int newCount = right.readNBytes(newBlock, 0, newBlock.length);
+                if (oldCount == 0 && newCount == 0) break;
+                for (int i = 0; i < Math.max(oldCount, newCount); i++) {
+                    int oldByte = i < oldCount ? Byte.toUnsignedInt(oldBlock[i]) : -1;
+                    int newByte = i < newCount ? Byte.toUnsignedInt(newBlock[i]) : -1;
+                    if (oldByte != newByte) {
+                        differingPositions++;
+                        if (current == null) {
+                            current = new RangeBuilder(offset);
+                            rangeCount++;
+                        }
+                        current.append(offset, oldByte, newByte);
+                    } else if (current != null) {
+                        store(ranges, current, maximumStoredRanges);
+                        current = null;
+                    }
+                    offset++;
                 }
             }
         }

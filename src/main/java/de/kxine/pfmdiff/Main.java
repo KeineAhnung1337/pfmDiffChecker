@@ -41,15 +41,19 @@ public final class Main {
         try {
             System.out.println("Comparing directory trees…");
             ComparisonReport report = new AppService().compareAndWrite(
-                    options.original(), options.comparison(), output,
+                     options.original(), options.comparison(), output,
                     (completed, total, path) -> {
                         if (total > 0 && (completed == total || completed % 100 == 0)) {
                             System.out.printf("Processed %d/%d entries%n", completed, total);
                         }
-                    }, () -> false);
+                     }, () -> false, options.overwrite());
             System.out.println("Report written to " + output);
             if (report.hasErrors()) {
                 System.err.println("Comparison completed with file-processing errors; see the report.");
+                return 2;
+            }
+            if (report.hasSkipped()) {
+                System.err.println("Comparison incomplete: symbolic links were skipped; see the report.");
                 return 2;
             }
             if (report.hasDifferences()) {
@@ -71,7 +75,7 @@ public final class Main {
                   java -jar pfm-diff-checker.jar --original <directory> --compare <directory> --output <report.html> [--overwrite]
 
                 Run without arguments in a desktop environment to open the graphical interface.
-                Exit codes: 0 identical, 1 differences, 2 operational/file-processing error.
+                Exit codes: 0 identical, 1 differences, 2 error or incomplete comparison.
                 """);
     }
 

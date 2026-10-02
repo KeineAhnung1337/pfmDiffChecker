@@ -22,7 +22,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.function.BooleanSupplier;
 
 public final class ComparisonEngine {
@@ -34,18 +33,17 @@ public final class ComparisonEngine {
         Path comparison = validateRoot(config.comparisonRoot(), "Comparison");
         Path excluded = config.excludedOutput() == null ? null : config.excludedOutput().toAbsolutePath().normalize();
 
-        Map<String, NodeInfo> left = scan(original, excluded, cancelled);
-        Map<String, NodeInfo> right = scan(comparison, excluded, cancelled);
-        TreeSet<String> paths = new TreeSet<>();
-        paths.addAll(left.keySet());
-        paths.addAll(right.keySet());
+        Map<String, NodePair> paths = new TreeMap<>();
+        scan(original, excluded, cancelled, paths, true);
+        scan(comparison, excluded, cancelled, paths, false);
 
         List<EntryResult> entries = new ArrayList<>();
         int current = 0;
-        for (String relativePath : paths) {
+        for (Map.Entry<String, NodePair> path : paths.entrySet()) {
             checkCancelled(cancelled);
+            String relativePath = path.getKey();
             progress.update(current++, paths.size(), relativePath);
-            entries.add(compareEntry(relativePath, left.get(relativePath), right.get(relativePath), config.detailLimit(), cancelled));
+            entries.add(compareEntry(relativePath, path.getValue().left(), path.getValue().right(), config.detailLimit(), cancelled));
         }
         progress.update(paths.size(), paths.size(), "Complete");
         return new ComparisonReport(original, comparison, Instant.now(), entries);
@@ -141,29 +139,30 @@ public final class ComparisonEngine {
         }
         try {
             if (leftKind == FileKind.XML) {
-                XmlFileComparator.ContentComparison result = XmlFileComparator.compare(left.path, right.path, detailLimit);
+                XmlFileComparator.ContentComparison result = XmlFileComparator.compare(left.path, right.path, detailLimit, cancelled);
                 return new EntryResult(relativePath, EntryType.FILE, leftKind, Status.CHANGED,
                         left.size, right.size, leftHash, rightHash, result.semanticEqual(), result.details(), null);
             }
-            PdfFileComparator.ContentComparison result = PdfFileComparator.compare(left.path, right.path, detailLimit);
+            PdfFileComparator.ContentComparison result = PdfFileComparator.compare(left.path, right.path, detailLimit, cancelled);
             return new EntryResult(relativePath, EntryType.FILE, leftKind, Status.CHANGED,
                     left.size, right.size, leftHash, rightHash, result.semanticEqual(), result.details(), null);
+        } catch (ComparisonCancelledException e) {
+            throw e;
         } catch (Exception e) {
             return new EntryResult(relativePath, EntryType.FILE, leftKind, Status.ERROR,
                     left.size, right.size, leftHash, rightHash, null, List.of(), readableError(e));
         }
     }
 
-    private Map<String, NodeInfo> scan(Path root, Path excluded, BooleanSupplier cancelled)
+    private void scan(Path root, Path excluded, BooleanSupplier cancelled, Map<String, NodePair> entries, boolean original)
             throws IOException, ComparisonCancelledException {
-        Map<String, NodeInfo> entries = new TreeMap<>();
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                     checkCancelledUnchecked(cancelled);
                     if (!dir.equals(root) && !isExcluded(dir, excluded)) {
-                        entries.put(relative(root, dir), new NodeInfo(dir, EntryType.DIRECTORY, null, null));
+                        store(entries, relative(root, dir), new NodeInfo(dir, EntryType.DIRECTORY, null, null), original);
                     }
                     return isExcluded(dir, excluded) ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
                 }
@@ -173,7 +172,7 @@ public final class ComparisonEngine {
                     checkCancelledUnchecked(cancelled);
                     if (!isExcluded(file, excluded)) {
                         EntryType type = attrs.isSymbolicLink() ? EntryType.SYMBOLIC_LINK : EntryType.FILE;
-                        entries.put(relative(root, file), new NodeInfo(file, type, attrs.size(), null));
+                        store(entries, relative(root, file), new NodeInfo(file, type, attrs.size(), null), original);
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -181,7 +180,7 @@ public final class ComparisonEngine {
                 @Override
                 public FileVisitResult visitFileFailed(Path file, IOException exc) {
                     if (!isExcluded(file, excluded)) {
-                        entries.put(relative(root, file), new NodeInfo(file, EntryType.FILE, null, readableError(exc)));
+                        store(entries, relative(root, file), new NodeInfo(file, EntryType.FILE, null, readableError(exc)), original);
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -189,7 +188,12 @@ public final class ComparisonEngine {
         } catch (CancelledIoException e) {
             throw new ComparisonCancelledException();
         }
-        return entries;
+    }
+
+    private static void store(Map<String, NodePair> entries, String path, NodeInfo node, boolean original) {
+        entries.compute(path, (ignored, pair) -> original
+                ? new NodePair(node, pair == null ? null : pair.right())
+                : new NodePair(pair == null ? null : pair.left(), node));
     }
 
     private static Path validateRoot(Path root, String label) throws IOException {
@@ -259,6 +263,7 @@ public final class ComparisonEngine {
     }
 
     private record NodeInfo(Path path, EntryType type, Long size, String error) { }
+    private record NodePair(NodeInfo left, NodeInfo right) { }
 
     private static final class CancelledIoException extends IOException { }
 

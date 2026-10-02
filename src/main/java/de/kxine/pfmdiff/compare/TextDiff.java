@@ -2,6 +2,7 @@ package de.kxine.pfmdiff.compare;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 final class TextDiff {
     private static final long MAX_LCS_CELLS = 4_000_000L;
@@ -9,12 +10,14 @@ final class TextDiff {
     private TextDiff() {
     }
 
-    static List<String> lines(String original, String comparison, int limit) {
+    static List<String> lines(String original, String comparison, int limit, BooleanSupplier cancelled)
+            throws ComparisonEngine.ComparisonCancelledException {
+        checkCancelled(cancelled);
         String[] left = normalize(original).split("\n", -1);
         String[] right = normalize(comparison).split("\n", -1);
         List<String> result = (long) left.length * right.length <= MAX_LCS_CELLS
-                ? lcsDiff(left, right, limit + 1)
-                : positionalDiff(left, right, limit + 1);
+                ? lcsDiff(left, right, limit + 1, cancelled)
+                : positionalDiff(left, right, limit + 1, cancelled);
         if (result.size() > limit) {
             return withTruncation(result.subList(0, limit));
         }
@@ -25,9 +28,11 @@ final class TextDiff {
         return value.replace("\r\n", "\n").replace('\r', '\n');
     }
 
-    private static List<String> lcsDiff(String[] left, String[] right, int limit) {
+    private static List<String> lcsDiff(String[] left, String[] right, int limit, BooleanSupplier cancelled)
+            throws ComparisonEngine.ComparisonCancelledException {
         int[][] lcs = new int[left.length + 1][right.length + 1];
         for (int i = left.length - 1; i >= 0; i--) {
+            checkCancelled(cancelled);
             for (int j = right.length - 1; j >= 0; j--) {
                 lcs[i][j] = left[i].equals(right[j]) ? lcs[i + 1][j + 1]
                         : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
@@ -38,6 +43,7 @@ final class TextDiff {
         int i = 0;
         int j = 0;
         while (i < left.length || j < right.length) {
+            if (((i + j) & 0x3FF) == 0) checkCancelled(cancelled);
             if (i < left.length && j < right.length && left[i].equals(right[j])) {
                 i++;
                 j++;
@@ -53,11 +59,13 @@ final class TextDiff {
         return result;
     }
 
-    private static List<String> positionalDiff(String[] left, String[] right, int limit) {
+    private static List<String> positionalDiff(String[] left, String[] right, int limit, BooleanSupplier cancelled)
+            throws ComparisonEngine.ComparisonCancelledException {
         List<String> result = new ArrayList<>();
         result.add("Large text: showing differences by line number instead of calculating moved lines.");
         int lines = Math.max(left.length, right.length);
         for (int i = 0; i < lines && result.size() < limit; i++) {
+            if ((i & 0x3FF) == 0) checkCancelled(cancelled);
             String oldLine = i < left.length ? left[i] : null;
             String newLine = i < right.length ? right[i] : null;
             if (!java.util.Objects.equals(oldLine, newLine)) {
@@ -72,5 +80,9 @@ final class TextDiff {
         List<String> result = new ArrayList<>(source);
         result.add("… additional differences omitted from this report");
         return result;
+    }
+
+    private static void checkCancelled(BooleanSupplier cancelled) throws ComparisonEngine.ComparisonCancelledException {
+        if (cancelled != null && cancelled.getAsBoolean()) throw new ComparisonEngine.ComparisonCancelledException();
     }
 }

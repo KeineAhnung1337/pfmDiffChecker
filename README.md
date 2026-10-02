@@ -27,7 +27,9 @@ java -jar target/pfm-diff-checker.jar \
   --output /path/to/report.html
 ```
 
-Add `--overwrite` to replace an existing report. Exit code `0` means identical, `1` means differences were found, and `2` means an operational or file-processing error occurred. A report is still written after individual file errors whenever possible.
+Add `--overwrite` to replace an existing report. Exit code `0` means identical, `1` means differences were found, and `2` means an error or incomplete comparison (for example, skipped symbolic links). A report is still written after individual file errors whenever possible.
+
+Save the report **outside both directories being compared** to prevent it from replacing a source file. XML structural comparison is limited to 16 MiB per file and PDF extracted text to 16 Mi characters per file; files exceeding these limits appear as errors in the report. XML comparison ignores indented line-break formatting in element-only content, but preserves inline whitespace and combines adjacent text/CDATA nodes. Without a schema, whitespace significance is sometimes ambiguous.
 
 The application does not use the network at runtime. Symbolic links are listed as skipped warnings and are never followed.
 
