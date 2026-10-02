@@ -40,6 +40,10 @@ class HtmlReportWriterTest {
         assertFalse(html.contains("https://"));
         assertFalse(html.contains("data-search="));
         assertTrue(html.contains("row.textContent.toLocaleLowerCase()"));
+        assertTrue(html.contains("<h2>Differences found</h2>"));
+        assertTrue(html.contains("data-kind=\"xml\""));
+        assertTrue(html.contains("<label for=\"kind\">Kind"));
+        assertTrue(html.contains("<noscript>"));
     }
 
     @Test
@@ -53,5 +57,29 @@ class HtmlReportWriterTest {
         assertEquals("created during comparison", Files.readString(output));
         new HtmlReportWriter().write(report, output, true);
         assertTrue(Files.readString(output).startsWith("<!doctype html>"));
+        assertTrue(Files.readString(output).contains("<h2>Trees match</h2>"));
+    }
+
+    @Test
+    void incompleteOutcomeAndDirectoryMeaningAreExplained() throws Exception {
+        EntryResult directory = new EntryResult("folder", EntryResult.EntryType.DIRECTORY,
+                EntryResult.FileKind.NOT_APPLICABLE, EntryResult.Status.IDENTICAL,
+                null, null, null, null, true, List.of(), null);
+        EntryResult skipped = new EntryResult("link", EntryResult.EntryType.SYMBOLIC_LINK,
+                EntryResult.FileKind.NOT_APPLICABLE, EntryResult.Status.SKIPPED,
+                null, null, null, null, null, List.of("Symbolic link was not followed."), null);
+        ComparisonReport report = new ComparisonReport(Path.of("original"), Path.of("comparison"),
+                Instant.parse("2026-01-01T00:00:00Z"), List.of(directory, skipped));
+        Path output = temporary.resolve("incomplete.html");
+
+        new HtmlReportWriter().write(report, output);
+        String html = Files.readString(output);
+
+        assertTrue(html.contains("<h2>Comparison incomplete</h2>"));
+        assertTrue(html.contains("Present in both"));
+        assertTrue(html.contains("data-kind=\"directory\""));
+        assertTrue(html.contains("data-kind=\"symbolic_link\""));
+        assertTrue(html.contains("A matching directory row only confirms"));
+        assertTrue(html.contains("aria-live=\"polite\""));
     }
 }
